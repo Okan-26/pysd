@@ -183,7 +183,7 @@ class Element():
             # defined in several equations each with one subscript
             for subnode in self.node.xpath("ns:element", namespaces=self.ns):
                 self.components.append(
-                    ((subnode.attrib["subscript"].split(","), []),
+                    (([s.strip() for s in subnode.attrib["subscript"].split(",")], []),
                      self._parse_component(subnode, behaviors)[0])
                 )
         else:

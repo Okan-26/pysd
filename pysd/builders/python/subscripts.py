@@ -253,6 +253,19 @@ class SubscriptManager:
         sub_elems_list = [y for x in self.subscripts.values() for y in x]
         coordinates = {}
         for sub in subs:
+            #debug *
+            if sub == "*":
+                remaining_dims = [
+                    d for d in self.subscripts.keys()
+                    if d not in coordinates
+                ]
+                if not remaining_dims:
+                    raise ValueError("STAR '*' used but no remaining dimensions available")
+            
+                dim = remaining_dims[0]
+                coordinates[dim] = self.subscripts[dim]
+                continue
+            #debug * end
             if sub in sub_elems_list:
                 name = self._find_subscript_name(
                     sub, avoid=subs + list(coordinates))

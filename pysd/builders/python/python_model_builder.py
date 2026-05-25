@@ -21,6 +21,10 @@ from .namespace import NamespaceManager
 from .subscripts import SubscriptManager
 from .imports import ImportsManager
 from pysd._version import __version__
+#debug self imports start
+import networkx as nx
+import itertools
+#debug self imports end
 
 
 class ModelBuilder:
@@ -608,6 +612,9 @@ class ElementBuilder:
             # This allows reference to the same variable
             # from: VAR[A] = 5; VAR[B] = 2*VAR[A]
             # to: value[0] = 5; value[1] = 2*value[0]
+            #DEBUG start
+            expressions = self._topo_sort_self_dependencies(expressions)
+            #DEBUG end
             self.section.imports.add("numpy")
             self.pre_expression =\
                 "value = xr.DataArray(np.nan, {%s}, %s)\n" % (
@@ -679,19 +686,141 @@ class ElementBuilder:
                 "bug."
             )
 
+    #DEBUG start: self-dependencies for SELF{}
+    def _topo_sort_self_dependencies(self, expressions: list) -> list:
+        """
+        Topologically sort expressions with self-references (value.loc[...]),
+        including implicit-dimension dependencies (':' slices).
+        """
+        import networkx as nx
+    
+        print("\n[DBG topo-sort SELF dependencies]")
+        print(f"  Number of expressions: {len(expressions)}")
+    
+        # Build dependency graph
+        G = nx.DiGraph()
+        n = len(expressions)
+        G.add_nodes_from(range(n))
+    
+        def _parse_loc_from_lhs(loc_str):
+            """
+            Parse LHS loc like "['jack'], ['young'], ['nurse']"
+            -> ["'jack'", "'young'", "'nurse'"]
+            """
+            cleaned = loc_str.replace("[", "").replace("]", "")
+            return [x.strip() for x in cleaned.split(",")]
+    
+        def _parse_loc_from_rhs(expr_text):
+            """
+            Extract RHS loc from value.loc[...] if present.
+            Example:
+              value.loc[:, 'young', 'nurse'] -> [":", "'young'", "'nurse'"]
+            """
+            if "value.loc[" not in expr_text:
+                return None
+            inside = expr_text.split("value.loc[", 1)[1].split("]", 1)[0]
+            return [x.strip() for x in inside.split(",")]
+    
+        def _matches(lhs_coords, rhs_selectors):
+            """
+            Dimension-wise match:
+            - rhs == ':' matches anything
+            - otherwise lhs must equal rhs
+            """
+            for lhs, rhs in zip(lhs_coords, rhs_selectors):
+                if rhs == ":":
+                    continue
+                if lhs != rhs:
+                    return False
+            return True
+    
+        # Parse all LHS locs
+        lhs_locs = []
+        for idx, expr in enumerate(expressions):
+            raw = expr["loc"]
+            lhs = _parse_loc_from_lhs(raw)
+            lhs_locs.append(lhs)
+    
+            print(f"\n  LHS[{idx}] raw:", raw)
+            print(f"        parsed:", lhs)
+    
+        # Detect dependencies
+        for i, expr_i in enumerate(expressions):
+            rhs_text = str(expr_i["expr"])
+            rhs_loc = _parse_loc_from_rhs(rhs_text)
+    
+            print(f"\n  RHS[{i}] expression:")
+            print("   ", rhs_text)
+    
+            if rhs_loc is None:
+                print("    (no value.loc[...] reference)")
+                continue
+    
+            print("    parsed RHS loc:", rhs_loc)
+    
+            for j, lhs_coords in enumerate(lhs_locs):
+                if i == j:
+                    continue
+    
+                match = _matches(lhs_coords, rhs_loc)
+                print(
+                    f"    check LHS[{j}] vs RHS[{i}] ->",
+                    "MATCH" if match else "no match",
+                    "| LHS:", lhs_coords,
+                )
+    
+                if match:
+                    G.add_edge(j, i)
+                    print(f"      >>> DEP: LHS[{j}] -> RHS[{i}]")
+    
+        # Topological sort
+        try:
+            sorted_indices = list(nx.topological_sort(G))
+            print("\n  Topological order:", sorted_indices)
+        except nx.NetworkXUnfeasible:
+            import warnings
+            warnings.warn("Cyclic self-dependency detected. Order may be incorrect.")
+            print("  Cyclic dependency detected, returning original order.")
+            return expressions
+    
+        return [expressions[i] for i in sorted_indices]
+
+
+
+
     def _manage_multi_def(self, expression: dict) -> str:
         """
-        Manage multiline definitions when some of them (not all) are
-        merged to one object.
+        Manage multiple assignments when an element is split into multiple
+        value.loc[...] assignments, respecting self-dependencies.
+    
+        Parameters
+        ----------
+        expression: dict or list of dict
+            Single or multiple component expressions with subscripts.
+    
+        Returns
+        -------
+        final_expr: str
+            Python code string for the element assignment.
         """
+        import xarray as xr
+    
+        # Wrap single expression in a list if needed
+        expressions = [expression] if not isinstance(expression, list) else expression
+        # Topologically sort them
+        ordered = self._topo_sort_self_dependencies(expressions)
+    
+        # Build the assignment code
         final_expr = "def_subs = xr.zeros_like(value, dtype=bool)\n"
-        for loc in expression["loc"]:
-            # coordinates of the object
-            final_expr += f"def_subs.loc[{loc}] = True\n"
-
-        # replace the values matching the coordinates
-        return final_expr + "value.values[def_subs.values] = "\
-            "%(expr)s[def_subs.values]\n" % expression
+        for expr in ordered:
+            for loc in expr["loc"]:
+                final_expr += f"def_subs.loc[{loc}] = True\n"
+    
+        # Assign the values only for the selected coordinates
+        final_expr += "value.values[def_subs.values] = %s[def_subs.values]\n" % ordered[-1]["expr"]
+    
+        return final_expr
+    #DEBUG self end
 
     def _manage_except(self, expression: dict) -> str:
         """

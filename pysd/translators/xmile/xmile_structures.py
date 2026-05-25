@@ -92,7 +92,7 @@ operators = {
     "not_ops": ["not"],
     "comp_ops": ["=", "<>", "<=", "<", ">=", ">"],
     "add_ops": ["+", "-"],
-    "prod_ops": ["*", "/"],
+    "prod_ops": ["//", "*", "/"],
     "exp_ops": ["^"],
     "pre_ops": ["+", "-"]
 }

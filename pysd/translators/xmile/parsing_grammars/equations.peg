@@ -21,7 +21,10 @@ call = reference _ "(" _ arguments _ ")"
 conditional_statement = "IF" _ logic2_expr _ "THEN"  _ logic2_expr _ "ELSE" _ logic2_expr
 
 reference = (name _ subscript_list) / name  # check first for subscript
-subscript_list = "[" _ (name _ "!"? _ ","? _)+ _ "]"
+#DEBUG *
+subscript_list = "[" _ (subscript_item _ "!"? _ ","? _)+ _ "]"
+subscript_item = "*" / ":" / name
+#DEBUG end
 
 array = (raw_number _ ("," / ";")? _)+ !~r"."  # negative lookahead for
 

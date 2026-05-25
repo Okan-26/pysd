@@ -306,6 +306,7 @@ class OperationBuilder(StructureBuilder):
         "^": ("%(left)s**%(right)s", None, 1),
         "*": ("%(left)s*%(right)s", None, 2),
         "/": ("%(left)s/%(right)s", None, 2),
+	"//": ("np.divide(%(left)s, %(right)s, out=np.zeros_like(%(left)s, dtype=float), where=(%(right)s!=0))", ("numpy",), 2),
         "+": ("%(left)s + %(right)s", None, 3),
         "-": ("%(left)s - %(right)s", None, 3),
         "=": ("%(left)s == %(right)s", None, 4),
@@ -442,7 +443,7 @@ class CallBuilder(StructureBuilder):
             # Build missing function
             self.function = function_name
             self.build = self.build_not_implemented
-
+    
     def build_not_implemented(self, arguments: dict) -> BuildAST:
         """
         Build method for not implemented function calls.
@@ -606,6 +607,7 @@ class CallBuilder(StructureBuilder):
         """
         # Get the function expression from the functionspace
         expression, modules = functionspace[self.function]
+
         for module in modules:
             # Update module dependencies in imports
             self.section.imports.add(*module)
@@ -626,7 +628,15 @@ class CallBuilder(StructureBuilder):
                  for i in ["0", "1"]]
             else:
                 subs = arguments["0"].subscripts
+
             final_subscripts, arguments["axis"] = self._compute_axis(subs)
+            #debug *
+            if self.function in {"sum", "prod", "vmin", "vmax"}:
+                if arguments.get("axis") == [] and arguments["0"].subscripts:
+                    arguments["axis"] = list(arguments["0"].subscripts.keys())
+                    final_subscripts = {}  # reducers return scalar
+
+            #debug * end
 
         elif "%(size)s" in expression:
             # Random expressions, need to give the final size of the
@@ -732,7 +742,6 @@ class CallBuilder(StructureBuilder):
                 # dimensions remaining
                 coords[subs] = subscripts[subs]
         return coords, axis
-
 
 class AllocateAvailableBuilder(StructureBuilder):
     """Builder for allocate_available function."""
@@ -1783,7 +1792,6 @@ class InlineLookupsBuilder(StructureBuilder):
                 subscripts={},
                 order=0)
 
-
 class ReferenceBuilder(StructureBuilder):
     """Builder for references to other variables."""
     def __init__(self, reference_str: ReferenceStructure, component: object):
@@ -1796,12 +1804,9 @@ class ReferenceBuilder(StructureBuilder):
     @property
     def subscripts(self):
         return self._subscripts
-
     @subscripts.setter
     def subscripts(self, subscripts: SubscriptsReferenceStructure):
-        """Get subscript dictionary from reference"""
         ref_subs = getattr(subscripts, "subscripts", [])
-
         self._subscripts = self.section.subscripts.make_coord_dict(ref_subs)
 
         if len(ref_subs) != len(self._subscripts):
@@ -1874,6 +1879,27 @@ class ReferenceBuilder(StructureBuilder):
             The built object.
 
         """
+        #DEBUG self
+        if self.reference.lower() == "self":
+            # Use the local array, not the function
+            expression = "value"
+            
+            # Original subscripts of the current component
+            original_subs = self.section.subscripts.make_coord_dict(
+                self.section.subscripts.elements[self.component.element.name]
+            )
+        
+            # Apply the normal subscript visiting logic
+            expression, final_subs = self._visit_subscripts(expression, original_subs)
+        
+            # Avoid self-dependency in calls
+            return BuildAST(
+                expression=expression,
+                calls={},  
+                subscripts=final_subs,
+                order=0
+            )
+        #DEBUG end
         if self.reference not in self.section.namespace.cleanspace:
             # Manage references to subscripts (subscripts used as variables)
             expression, subscripts =\
@@ -1892,7 +1918,6 @@ class ReferenceBuilder(StructureBuilder):
                 order=0)
 
         reference = self.section.namespace.cleanspace[self.reference]
-
         expression = reference + "()"
 
         if not self.subscripts:
@@ -1904,10 +1929,8 @@ class ReferenceBuilder(StructureBuilder):
 
         original_subs = self.section.subscripts.make_coord_dict(
                     self.section.subscripts.elements[reference])
-
         expression, final_subs = self._visit_subscripts(
             expression, original_subs)
-
         return BuildAST(
             expression=expression,
             calls={reference: 1},
